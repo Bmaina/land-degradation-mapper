@@ -1,0 +1,135 @@
+# ============================================================
+# Land Degradation Mapper – Configuration
+# Transformer-Based Sentinel-1/2 Foundation Model
+# ============================================================
+
+project:
+  name: "LandDegMapper"
+  version: "1.0.0"
+  description: "Transformer-based land degradation mapping via fused Sentinel-1/2"
+  authors: ["Geospatial AI Lab"]
+  license: "MIT"
+
+# ── Data ────────────────────────────────────────────────────
+data:
+  sentinel1:
+    bands: ["VV", "VH"]                # SAR polarisations
+    preprocessing: "gamma0_db"         # terrain-corrected γ₀ in dB
+    resolution_m: 10
+  sentinel2:
+    bands: ["B2", "B3", "B4", "B5", "B6", "B7", "B8", "B8A", "B11", "B12"]
+    preprocessing: "sen2cor_l2a"       # surface reflectance
+    resolution_m: 10
+  patch_size: 224                      # pixels (matches ViT default)
+  patch_stride: 112                    # 50 % overlap for inference
+  cloud_threshold: 0.10                # max cloud cover fraction
+  temporal_window_days: 30             # composite window
+  n_time_steps: 4                      # quarterly composites
+
+# ── Model ───────────────────────────────────────────────────
+model:
+  backbone: "dofa_vit_base"            # DOFA ViT-Base foundation model
+  pretrained_weights: "dofa_pretrained_vitbase.pth"
+  freeze_backbone_epochs: 5            # linear probe warm-up
+  num_classes: 6                       # degradation classes (see below)
+  img_size: 224
+  patch_embed_size: 16
+  embed_dim: 768
+  depth: 12
+  num_heads: 12
+  mlp_ratio: 4.0
+  dropout: 0.1
+  attn_dropout: 0.05
+
+  fusion:
+    strategy: "cross_modal_attention"  # options: concat | cross_modal_attention | gated
+    s1_proj_dim: 256
+    s2_proj_dim: 256
+    fused_dim: 512
+
+  decoder:
+    type: "upernet"                    # UperNet segmentation head
+    hidden_dims: [512, 256, 128, 64]
+    use_auxiliary_head: true
+
+# ── Classes ─────────────────────────────────────────────────
+# 0 – Stable vegetation
+# 1 – Moderate vegetation stress
+# 2 – Severe vegetation stress / browning
+# 3 – Bare / exposed soil
+# 4 – Active degradation / erosion
+# 5 – Recovery / revegetation
+
+classes:
+  names: ["Stable", "Moderate Stress", "Severe Stress",
+          "Bare Soil", "Active Degradation", "Recovery"]
+  weights: [0.5, 1.0, 1.5, 1.2, 2.0, 1.5]  # inverse-frequency weighting
+
+# ── Training ────────────────────────────────────────────────
+training:
+  epochs: 100
+  batch_size: 16
+  num_workers: 8
+  seed: 42
+  device: "cuda"                       # cuda | mps | cpu
+  mixed_precision: true                # AMP fp16
+  gradient_clip: 1.0
+
+  optimizer:
+    name: "adamw"
+    lr: 1e-4
+    weight_decay: 1e-2
+    betas: [0.9, 0.999]
+
+  scheduler:
+    name: "cosine_warmup"
+    warmup_epochs: 10
+    min_lr: 1e-6
+
+  loss:
+    segmentation: "focal_dice"         # Focal + Dice combo
+    focal_gamma: 2.0
+    focal_alpha: 0.25
+    dice_weight: 0.5
+
+  augmentation:
+    horizontal_flip: true
+    vertical_flip: true
+    random_rotate90: true
+    random_brightness_contrast: 0.2
+    gaussian_noise_sigma: 0.01
+    temporal_shuffle: true
+
+  val_split: 0.15
+  test_split: 0.10
+
+# ── MLflow ──────────────────────────────────────────────────
+mlflow:
+  tracking_uri: "http://localhost:5000"
+  experiment_name: "LandDegMapper_v1"
+  run_tags:
+    model_family: "DOFA-ViT"
+    data_source: "Sentinel-1/2"
+    region: "Sub-Saharan Africa"
+  log_artifacts: true
+  log_model: true
+  register_model_name: "land_degradation_vit"
+
+# ── Inference ───────────────────────────────────────────────
+inference:
+  checkpoint: "best_model.pth"
+  batch_size: 32
+  tta: true                            # test-time augmentation
+  output_format: "geotiff"
+  output_crs: "EPSG:4326"
+  generate_uncertainty_map: true
+  threshold: 0.5
+
+# ── Paths ───────────────────────────────────────────────────
+paths:
+  raw_data: "data/raw"
+  processed_data: "data/processed"
+  patches: "data/patches"
+  checkpoints: "checkpoints"
+  logs: "logs"
+  outputs: "outputs"
